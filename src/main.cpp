@@ -24,9 +24,9 @@ const UBaseType_t PRIORITY_MOUSE_LOOP = 3;
 const UBaseType_t PRIORITY_KEYBOARD_LOOP = 2;
 const UBaseType_t PRIORITY_MOUSE_WRITE = 5;
 const UBaseType_t PRIORITY_KEYBOARD_WRITE = 4;
-const uint32_t MOUSE_LOOP_DELAY = 8;
-const uint32_t KEYBOARD_LOOP_DELAY = 8;
-const uint32_t MAIN_LOOP_DELAY = 10;
+const uint32_t MOUSE_LOOP_DELAY = 7;
+const uint32_t KEYBOARD_LOOP_DELAY = 7;
+const uint32_t MAIN_LOOP_DELAY = 11;
 
 const IPAddress IP(172, 21, 186, 100);
 const IPAddress GATEWAY(172, 21, 186, 2);
@@ -143,7 +143,14 @@ void keyboard_write(void *args) {
   uint8_t len = args_p->len;
   uint8_t *data = args_p->data;
 
-  keyboard->write_multi(len, data);
+  if (keyboard->data_report_enabled) {
+    int ret = keyboard->write_multi(len, data);
+    if (ret != 0) {
+      Serial.println("Error: keyboard_write: Data report interrupted");
+    }
+  } else {
+    Serial.println("Error: keyboard_write: Legnth of data report is invalid");
+  }
 
   delete args_p;
   vTaskDelete(NULL);

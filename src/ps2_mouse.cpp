@@ -34,8 +34,8 @@ class PS2mouse : public PS2dev {
   uint8_t _last_packet_len = 0;
   uint8_t _last_packet_data[16];
   /**
-   * @brief send multi-byte data to the host 
-   * 
+   * @brief send multi-byte data to the host
+   *
    * @param len amount of data in byte
    * @param data data to send to the host
    * @return -1 on fail, 0 on success
@@ -182,7 +182,7 @@ class PS2mouse : public PS2dev {
 
     switch (cmd) {
       case 0xFF:  // reset
-        Serial.println("Reset command received");
+        Serial.println("mouse_reply(): Reset command received");
         ack();
         // the while loop lets us wait for the host to be ready
         while (write(0xAA) != 0) delay(1);
@@ -196,11 +196,11 @@ class PS2mouse : public PS2dev {
         reset_counter();
         break;
       case 0xFE:  // resend
-        Serial.println("Resend command received");
+        Serial.println("mouse_reply(): Resend command received");
         ack();
         break;
       case 0xF6:  // set defaults
-        Serial.println("Set defaults command received");
+        Serial.println("mouse_reply(): Set defaults command received");
         // enter stream mode
         ack();
         sample_rate = 100;
@@ -211,58 +211,59 @@ class PS2mouse : public PS2dev {
         reset_counter();
         break;
       case 0xF5:  // disable data reporting
-        Serial.println("Disable data reporting command received");
+        Serial.println("mouse_reply(): Disable data reporting command received");
         ack();
         data_report_enabled = false;
         reset_counter();
         break;
       case 0xF4:  // enable data reporting
-        Serial.println("Enable data reporting command received");
+        Serial.println("mouse_reply(): Enable data reporting command received");
         ack();
         data_report_enabled = true;
         reset_counter();
         break;
       case 0xF3:  // set sample rate
         ack();
-        read(&val);
-        sample_rate = (val == 0) ? 100 : val;
-        _min_report_interval_us = 1000000 / sample_rate;
-        _last_sample_rate[0] = _last_sample_rate[1];
-        _last_sample_rate[1] = _last_sample_rate[2];
-        _last_sample_rate[2] = val;
-        Serial.print("Set sample rate command received: ");
-        Serial.println(val);
-        ack();
-        reset_counter();
+        if (read(&val) == 0) {
+          sample_rate = (val == 0) ? 100 : val;
+          _min_report_interval_us = 1000000 / sample_rate;
+          _last_sample_rate[0] = _last_sample_rate[1];
+          _last_sample_rate[1] = _last_sample_rate[2];
+          _last_sample_rate[2] = val;
+          Serial.print("Set sample rate command received: ");
+          Serial.println(val);
+          ack();
+          reset_counter();
+        }
         break;
       case 0xF2:  // get device id
-        Serial.println("Get device id command received");
+        Serial.println("mouse_reply(): Get device id command received");
         ack();
         if (_last_sample_rate[0] == 200 && _last_sample_rate[1] == 100 && _last_sample_rate[2] == 80) {
           write(0x03);  // Intellimouse with wheel
-          Serial.println("Act as Intellimouse with wheel.");
+          Serial.println("mouse_reply(): Act as Intellimouse with wheel.");
           has_wheel = true;
         } else {
           write(0x00);  // Standard PS/2 mouse
-          Serial.println("Act as Standard PS/2 mouse.");
+          Serial.println("mouse_reply(): Act as Standard PS/2 mouse.");
           has_wheel = false;
         }
         reset_counter();
         break;
       case 0xF0:  // set remote mode
-        Serial.println("Set remote mode command received");
+        Serial.println("mouse_reply(): Set remote mode command received");
         ack();
         reset_counter();
         set_mode(REMOTE_MODE);
         break;
       case 0xEE:  // set wrap mode
-        Serial.println("Set wrap mode command received");
+        Serial.println("mouse_reply(): Set wrap mode command received");
         ack();
         reset_counter();
         set_mode(WRAP_MODE);
         break;
       case 0xEC:  // reset wrap mode
-        Serial.println("Reset wrap mode command received");
+        Serial.println("mouse_reply(): Reset wrap mode command received");
         ack();
         reset_counter();
         break;
@@ -272,37 +273,38 @@ class PS2mouse : public PS2dev {
         reset_counter();
         break;
       case 0xEA:  // set stream mode
-        Serial.println("Set stream mode command received");
+        Serial.println("mouse_reply(): Set stream mode command received");
         ack();
         reset_counter();
         break;
       case 0xE9:  // status request
-        Serial.println("Status request command received");
+        Serial.println("mouse_reply(): Status request command received");
         ack();
         send_status();
         break;
       case 0xE8:  // set resolution
         ack();
-        read(&val);
-        Serial.print("Set resolution command received: ");
-        Serial.println(val, HEX);
-        ack();
-        reset_counter();
+        if (read(&val) == 0) {
+          resolution = val;
+          Serial.print("mouse_reply(): Set resolution command received: ");
+          Serial.println(val, HEX);
+          ack();
+          reset_counter();
+        }
         break;
       case 0xE7:  // set scaling 2:1
-        Serial.println("Set scaling 2:1 command received");
+        Serial.println("mouse_reply(): Set scaling 2:1 command received");
         ack();
         scale = TWO_ONE;
         break;
       case 0xE6:  // set scaling 1:1
-        Serial.println("Set scaling 1:1 command received");
+        Serial.println("mouse_reply(): Set scaling 1:1 command received");
         ack();
         scale = ONE_ONE;
         break;
       default:
-        Serial.print("Unknown command received: ");
+        Serial.print("mouse_reply(): Unknown command received: ");
         Serial.println(cmd, HEX);
-        // ack();
     }
     return 0;
   }

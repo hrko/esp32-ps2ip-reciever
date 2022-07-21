@@ -245,7 +245,7 @@ class PS2mouse : public PS2dev {
           has_wheel = true;
         } else {
           write(0x00);  // Standard PS/2 mouse
-          Serial.println("mouse_reply(): Act as Standard PS/2 mouse.");
+          Serial.println("mouse_reply(): Act as standard PS/2 mouse.");
           has_wheel = false;
         }
         reset_counter();

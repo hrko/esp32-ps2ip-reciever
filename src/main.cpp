@@ -7,6 +7,40 @@
 #include "ps2_mouse.cpp"     // Contains the PS/2 mouse code
 #include "secrets.h"         // Contains the WiFi credentials
 
+class Ps2ipPacket {
+ public:
+  // /**
+  //  * @brief Construct a new Ps2ipPacket object.
+  //  *
+  //  * @param type packet type. 'M' for mouse, 'K' for keyboard.
+  //  * @param len length of data. 1-16.
+  //  * @param data data[0] to data[len - 1] will be copied to this object.
+  //  */
+  // Ps2ipPacket(char type, uint8_t len, uint8_t *data) {
+  //   this->type = type;
+  //   this->len = len;
+  //   for (int i = 0; i < len; i++) {
+  //     this->data[i] = data[i];
+  //   }
+  // }
+  char type;
+  uint8_t len;
+  uint8_t data[16];
+  boolean is_valid_mouse_packet() {
+    // validate packet type
+    if (type != 'M') return false;
+    // validate packet length
+    if (len != 4) return false;
+    // check if 1st byte's 4th bit is 1
+    if ((data[0] & 0x08) != 0x08) return false;
+    // check if 4th byte is between -8 and 7
+    int8_t x = data[3];
+    if (x < -8 || x > 7) return false;
+
+    return true;
+  }
+};
+
 const uint8_t LED_BUILTIN = 2;
 
 TaskHandle_t thp[3];
@@ -14,8 +48,8 @@ QueueHandle_t xQueue_mouse_code;
 QueueHandle_t xQueue_keyboard_code;
 const size_t MOUSE_QUEUE_LEN = 30;
 const size_t KEYBOARD_QUEUE_LEN = 30;
-const size_t MOUSE_QUEUE_ITEM_SIZE = 5;
-const size_t KEYBOARD_QUEUE_ITEM_SIZE = 9;
+// const size_t MOUSE_QUEUE_ITEM_SIZE = 5;
+// const size_t KEYBOARD_QUEUE_ITEM_SIZE = 9;
 const BaseType_t CORE_ID_MOUSE_LOOP = 1;
 const BaseType_t CORE_ID_KEYBOARD_LOOP = 0;
 const BaseType_t CORE_ID_MOUSE_WRITE = 1;
@@ -27,6 +61,8 @@ const UBaseType_t PRIORITY_KEYBOARD_WRITE = 4;
 const uint32_t MOUSE_LOOP_DELAY = 7;
 const uint32_t KEYBOARD_LOOP_DELAY = 7;
 const uint32_t MAIN_LOOP_DELAY = 11;
+const boolean FORCE_DATA_REPORTING_KEYBOARD = true;
+const boolean FORCE_DATA_REPORTING_MOUSE = false;
 
 const IPAddress IP(172, 21, 186, 100);
 const IPAddress GATEWAY(172, 21, 186, 2);
@@ -66,8 +102,8 @@ void setup() {
   Udp.begin(UDP_PORT);
   Serial.println("Started UDP server on port " + String(UDP_PORT));
 
-  xQueue_mouse_code = xQueueCreate(MOUSE_QUEUE_LEN, MOUSE_QUEUE_ITEM_SIZE);
-  xQueue_keyboard_code = xQueueCreate(KEYBOARD_QUEUE_LEN, KEYBOARD_QUEUE_ITEM_SIZE);
+  xQueue_mouse_code = xQueueCreate(MOUSE_QUEUE_LEN, sizeof(Ps2ipPacket));
+  xQueue_keyboard_code = xQueueCreate(KEYBOARD_QUEUE_LEN, sizeof(Ps2ipPacket));
 
   // function, task_name, stack_size, NULL, task_handle, priority, core_id
   xTaskCreateUniversal(mouse_loop, "mouse_loop", 4096, NULL, PRIORITY_MOUSE_LOOP, &thp[0], CORE_ID_MOUSE_LOOP);
@@ -80,24 +116,26 @@ void setup() {
 
 typedef struct {
   PS2mouse *mouse;
-  uint8_t len;
-  uint8_t data[16];
+  Ps2ipPacket packet;
 } mouse_write_args_t;
 
 void mouse_write(void *args) {
   mouse_write_args_t *args_p = (mouse_write_args_t *)args;
   PS2mouse *mouse = args_p->mouse;
-  uint8_t len = args_p->len;
-  uint8_t *data = args_p->data;
+  Ps2ipPacket *pkt = &(args_p->packet);
 
-  if ((len == 3 + mouse->has_wheel) && mouse->data_report_enabled) {
+  uint8_t len = 3 + mouse->has_wheel;
+  uint8_t *data = pkt->data;
+
+  if (pkt->is_valid_mouse_packet() && (mouse->data_report_enabled || FORCE_DATA_REPORTING_MOUSE)) {
     int ret = mouse->write_multi(len, data);
     if (ret != 0) {
-      Serial.println("Error: mouse_write: Data report interrupted");
+      Serial.println("Warning: mouse_write: Data report interrupted");
     }
-  } else {
-    Serial.println("Error: mouse_write: Legnth of data report is invalid");
   }
+  // else {
+  //   Serial.println("Error: mouse_write: Legnth of data report is invalid");
+  // }
 
   delete args_p;
   vTaskDelete(NULL);
@@ -116,14 +154,15 @@ void mouse_loop(void *args) {  //スレッド ②
 
     digitalWrite(LED_BUILTIN, mouse.data_report_enabled);
 
-    uint8_t msg[MOUSE_QUEUE_ITEM_SIZE];
-    if (xQueueReceive(xQueue_mouse_code, msg, 0) == pdTRUE) {
+    // uint8_t msg[MOUSE_QUEUE_ITEM_SIZE];
+    Ps2ipPacket pkt;
+    if (xQueueReceive(xQueue_mouse_code, &pkt, 0) == pdTRUE) {
       mouse_write_args_t *args_p = new mouse_write_args_t;
       args_p->mouse = &mouse;
-      args_p->len = 3 + mouse.has_wheel;
-      for (int i = 0; i < args_p->len; i++) {
-        args_p->data[i] = msg[i + 1];
-      }
+      args_p->packet = pkt;
+      // for (int i = 0; i < args_p->len; i++) {
+      //   args_p->data[i] = msg[i + 1];
+      // }
       TaskHandle_t thp;
       xTaskCreateUniversal(mouse_write, "mouse_write", 4096, args_p, PRIORITY_MOUSE_WRITE, &thp, CORE_ID_MOUSE_WRITE);
     }
@@ -133,23 +172,24 @@ void mouse_loop(void *args) {  //スレッド ②
 
 typedef struct {
   PS2keyboard *keyboard;
-  uint8_t len;
-  uint8_t data[16];
+  Ps2ipPacket packet;
 } keyboard_write_args_t;
 
 void keyboard_write(void *args) {
   keyboard_write_args_t *args_p = (keyboard_write_args_t *)args;
   PS2keyboard *keyboard = args_p->keyboard;
-  uint8_t len = args_p->len;
-  uint8_t *data = args_p->data;
+  Ps2ipPacket *pkt = &(args_p->packet);
 
-  if (keyboard->data_report_enabled) {
+  uint8_t len = pkt->len;
+  uint8_t *data = pkt->data;
+
+  if (keyboard->data_report_enabled || FORCE_DATA_REPORTING_KEYBOARD) {
     int ret = keyboard->write_multi(len, data);
     if (ret != 0) {
-      Serial.println("Error: keyboard_write: Data report interrupted");
+      Serial.println("Warning: keyboard_write: Data report interrupted");
     }
   } else {
-    Serial.println("Error: keyboard_write: Legnth of data report is invalid");
+    Serial.println("Warning: keyboard_write: Data report is disabled");
   }
 
   delete args_p;
@@ -170,14 +210,14 @@ void keyboard_loop(void *args) {
       digitalWrite(LED_BUILTIN, leds);
     }
 
-    uint8_t msg[KEYBOARD_QUEUE_ITEM_SIZE];
-    if (xQueueReceive(xQueue_keyboard_code, msg, 0) == pdTRUE) {
+    Ps2ipPacket pkt;
+    if (xQueueReceive(xQueue_keyboard_code, &pkt, 0) == pdTRUE) {
       keyboard_write_args_t *args_p = new keyboard_write_args_t;
       args_p->keyboard = &keyboard;
-      args_p->len = msg[0];
-      for (int i = 0; i < args_p->len; i++) {
-        args_p->data[i] = msg[i + 1];
-      }
+      args_p->packet = pkt;
+      // for (int i = 0; i < args_p->len; i++) {
+      //   args_p->data[i] = msg[i + 1];
+      // }
       TaskHandle_t thp;
       xTaskCreateUniversal(keyboard_write, "keyboard_write", 4096, args_p, PRIORITY_KEYBOARD_WRITE, &thp, CORE_ID_KEYBOARD_WRITE);
     }
@@ -186,6 +226,8 @@ void keyboard_loop(void *args) {
 }
 
 void loop() {
+  Ps2ipPacket ps2ip_packet;
+
   // note: recieved packets are sometimes combined into one packet.
   int size = Udp.parsePacket();
   if (size) {
@@ -195,59 +237,54 @@ void loop() {
     Serial.println(size);
 #endif
 
-    for (size_t i = 0; i < size; i++) {
+    do {
       // read type field
       int ret = Udp.read();
       if (ret == -1) {
-        Serial.println("Udp.read() failed while reading type field");
+        Serial.println("Udp.read() failed because no buffer is available");
         break;
       }
-      i++;
-      uint8_t type = ret;
+      ps2ip_packet.type = ret;
+      if (ps2ip_packet.type != 'M' && ps2ip_packet.type != 'K') {
+        Serial.println("Invalid type field");
+        continue;
+      }
 
       // read length field
       ret = Udp.read();
       if (ret == -1) {
-        Serial.println("Udp.read() failed while reading length field");
+        Serial.println("Udp.read() failed because no buffer is available");
         break;
       }
-      i++;
-      uint8_t length = ret;
+      ps2ip_packet.len = ret;
+      if (ps2ip_packet.len > sizeof(ps2ip_packet.data)) {
+        Serial.println("Invalid length field");
+        continue;
+      }
 
 #ifdef _DBG_ESP32_PS2_EMU_
       Serial.printf("type: %c\n", type);
       Serial.printf("length: %u\n", length);
 #endif
 
-      size_t queue_item_size = std::max(MOUSE_QUEUE_ITEM_SIZE, KEYBOARD_QUEUE_ITEM_SIZE);
-      uint8_t queue_item[queue_item_size];
-      queue_item[0] = length;
-      if (length > queue_item_size - 1) {
-        Serial.println("invalid length field in received packet");
+      ret = Udp.read(ps2ip_packet.data, ps2ip_packet.len);
+      if (ret < ps2ip_packet.len) {
+        Serial.println("Udp.read() reached end of buffer before reading all data");
         break;
       }
-      for (size_t j = 0; j < length; j++) {
-        ret = Udp.read();
-        if (ret == -1) {
-          Serial.println("Udp.read() failed while reading data");
-          break;
-        }
-        i++;
-        queue_item[j + 1] = ret;
-      }
 
-      if (type == 'K') {
+      if (ps2ip_packet.type == 'K') {
 #ifdef _DBG_ESP32_PS2_EMU_
         Serial.println("Recieved keyboard packet.");
 #endif
-        xQueueSend(xQueue_keyboard_code, queue_item, 0);
-      } else if (type == 'M') {
+        xQueueSend(xQueue_keyboard_code, &ps2ip_packet, 0);
+      } else if (ps2ip_packet.type == 'M') {
 #ifdef _DBG_ESP32_PS2_EMU_
         Serial.println("Recieved mouse packet.");
 #endif
-        xQueueSend(xQueue_mouse_code, queue_item, 0);
+        xQueueSend(xQueue_mouse_code, &ps2ip_packet, 0);
       }
-    }
+    } while (Udp.available() > 0);
   }
   delay(MAIN_LOOP_DELAY);
 }

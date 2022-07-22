@@ -44,7 +44,7 @@ class Ps2ipPacket {
 
 const uint8_t LED_BUILTIN = 2;
 
-TaskHandle_t thp[3];
+TaskHandle_t thp[4];
 QueueHandle_t xQueue_mouse_code;
 QueueHandle_t xQueue_keyboard_code;
 const size_t MOUSE_QUEUE_LEN = 30;
@@ -77,8 +77,10 @@ PS2keyboard keyboard(19, 18);  // clock, data
 AsyncUDP Udp;
 const uint16_t UDP_PORT = 3252;
 
-void mouse_loop(void *args);
-void keyboard_loop(void *args);
+void mouse_handle_host_msg(void *args);
+void keyboard_handle_host_msg(void *args);
+void mouse_write(void *args);
+void keyboard_write(void *args);
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -161,56 +163,64 @@ void setup() {
   xQueue_keyboard_code = xQueueCreate(KEYBOARD_QUEUE_LEN, sizeof(Ps2ipPacket));
 
   // function, task_name, stack_size, NULL, task_handle, priority, core_id
-  xTaskCreateUniversal(mouse_loop, "mouse_loop", 4096, NULL, PRIORITY_MOUSE_LOOP, &thp[0], CORE_ID_MOUSE_LOOP);
-  Serial.println("Created [mouse_loop] task");
-  xTaskCreateUniversal(keyboard_loop, "keyboard_loop", 4096, NULL, PRIORITY_KEYBOARD_LOOP, &thp[1], CORE_ID_KEYBOARD_LOOP);
-  Serial.println("Created [keyboard_loop] task");
+  xTaskCreateUniversal(mouse_handle_host_msg, "mouse_handle_host_msg", 4096, NULL, PRIORITY_MOUSE_LOOP, &thp[0], CORE_ID_MOUSE_LOOP);
+  Serial.println("Created [mouse_handle_host_msg] task");
+  xTaskCreateUniversal(keyboard_handle_host_msg, "keyboard_handle_host_msg", 4096, NULL, PRIORITY_KEYBOARD_LOOP, &thp[1],
+                       CORE_ID_KEYBOARD_LOOP);
+  Serial.println("Created [keyboard_handle_host_msg] task");
+  xTaskCreateUniversal(mouse_write, "mouse_write", 4096, NULL, PRIORITY_MOUSE_WRITE, &thp[2], CORE_ID_MOUSE_WRITE);
+  Serial.println("Created [mouse_write] task");
 
   Serial.println("Setup complete.");
 }
 
 void mouse_write(void *args) {
-  portENTER_CRITICAL(&bus_mutex);
+  uint64_t last_time = 0;
 
-  Ps2ipPacket pkt;
-  if (xQueuePeek(xQueue_mouse_code, &pkt, 0) != pdTRUE) {
-    goto FINALLY;
-  }
+  while (true) {
+    Ps2ipPacket pkt;
+    xQueueReceive(xQueue_mouse_code, &pkt, portMAX_DELAY);
 
-  pkt.len = 3 + mouse.has_wheel;
+    int64_t time_passed_us = micros() - last_time;
+    int64_t min_report_interval_us = 1000000 / mouse.sample_rate;
+    if (time_passed_us < min_report_interval_us) {
+      delayMicroseconds(min_report_interval_us - time_passed_us);
+    }
+    last_time = micros();
 
-  if (pkt.is_valid_mouse_packet() && (mouse.data_report_enabled || FORCE_DATA_REPORTING_MOUSE)) {
-    for (size_t i = 0; i < pkt.len; i++) {
-      if (mouse.write(pkt.data[i], 400) != 0) {
-        Serial.println("Warning: mouse_write: Data report interrupted");
-        goto FINALLY;
+    portENTER_CRITICAL(&bus_mutex);
+
+    pkt.len = 3 + mouse.has_wheel;
+
+    if (pkt.is_valid_mouse_packet() && (mouse.data_report_enabled || FORCE_DATA_REPORTING_MOUSE)) {
+      for (size_t i = 0; i < pkt.len; i++) {
+        if (mouse.write(pkt.data[i]) != 0) {
+          Serial.println("Warning: mouse_write: Data report interrupted");
+          break;
+        }
       }
     }
 
-    xQueueReceive(xQueue_mouse_code, &pkt, 0);
-  }
+    portEXIT_CRITICAL(&bus_mutex);
 
-FINALLY:
-  portEXIT_CRITICAL(&bus_mutex);
-  vTaskDelete(NULL);
+    delay(1);
+  }
 }
 
-void mouse_loop(void *args) {  //スレッド ②
+void mouse_handle_host_msg(void *args) {  //スレッド ②
   // mouse_init
   while (mouse.write(0xAA) != 0) delay(1);
   while (mouse.write(0x00) != 0) delay(1);
   Serial.println("Mouse initialized");
 
   while (1) {
+    portENTER_CRITICAL(&bus_mutex);
     mouse.mouse_handle();
+    portEXIT_CRITICAL(&bus_mutex);
 
     digitalWrite(LED_BUILTIN, mouse.data_report_enabled);
 
-    Ps2ipPacket pkt;
-    if (xQueuePeek(xQueue_mouse_code, &pkt, pdMS_TO_TICKS(MOUSE_LOOP_DELAY)) == pdTRUE) {
-      TaskHandle_t thp;
-      xTaskCreateUniversal(mouse_write, "mouse_write", 4096, NULL, PRIORITY_MOUSE_WRITE, &thp, CORE_ID_MOUSE_WRITE);
-    }
+    delay(MOUSE_LOOP_DELAY);
   }
 }
 
@@ -236,7 +246,7 @@ FINALLY:
   vTaskDelete(NULL);
 }
 
-void keyboard_loop(void *args) {
+void keyboard_handle_host_msg(void *args) {
   while (keyboard.write(0xAA) != 0) delay(1);
   Serial.println("Keyboard initialized");
 

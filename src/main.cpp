@@ -1,7 +1,8 @@
 #include <Arduino.h>
+#include <AsyncUDP.h>
 #include <WiFi.h>
-#include <esp_wifi.h>
 #include <esp32-ps2dev.h>  // Emulate a PS/2 device
+#include <esp_wifi.h>
 
 #include "ps2_keyboard.cpp"  // Contains the PS/2 keyboard code
 #include "ps2_mouse.cpp"     // Contains the PS/2 mouse code
@@ -60,7 +61,7 @@ const UBaseType_t PRIORITY_MOUSE_WRITE = 5;
 const UBaseType_t PRIORITY_KEYBOARD_WRITE = 4;
 const uint32_t MOUSE_LOOP_DELAY = 7;
 const uint32_t KEYBOARD_LOOP_DELAY = 7;
-const uint32_t MAIN_LOOP_DELAY = 11;
+const uint32_t MAIN_LOOP_DELAY = 1000;
 const boolean FORCE_DATA_REPORTING_KEYBOARD = true;
 const boolean FORCE_DATA_REPORTING_MOUSE = false;
 
@@ -69,7 +70,7 @@ const IPAddress GATEWAY(172, 21, 186, 2);
 const IPAddress SUBNET_MASK(255, 255, 255, 0);
 const IPAddress DNS(172, 21, 186, 1);
 
-WiFiUDP Udp;
+AsyncUDP Udp;
 const uint16_t UDP_PORT = 3252;
 
 void mouse_loop(void *args);
@@ -99,8 +100,58 @@ void setup() {
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
 
-  Udp.begin(UDP_PORT);
+  Udp.listen(UDP_PORT);
   Serial.println("Started UDP server on port " + String(UDP_PORT));
+  Udp.onPacket([](AsyncUDPPacket packet) {
+    Ps2ipPacket ps2ip_packet;
+
+    // read type field
+    int ret = packet.read();
+    if (ret == -1) {
+      Serial.println("packet.read() failed.");
+      return;
+    }
+    ps2ip_packet.type = ret;
+    if (ps2ip_packet.type != 'M' && ps2ip_packet.type != 'K') {
+      Serial.println("Invalid type field");
+      return;
+    }
+
+    // read length field
+    ret = packet.read();
+    if (ret == -1) {
+      Serial.println("packet.read() failed.");
+      return;
+    }
+    ps2ip_packet.len = ret;
+    if (ps2ip_packet.len > sizeof(ps2ip_packet.data)) {
+      Serial.println("Invalid length field");
+      return;
+    }
+
+#ifdef _DBG_ESP32_PS2_EMU_
+    Serial.printf("type: %c\n", type);
+    Serial.printf("length: %u\n", length);
+#endif
+
+    ret = packet.read(ps2ip_packet.data, ps2ip_packet.len);
+    if (ret < ps2ip_packet.len) {
+      Serial.println("packet.read() unexpectedly reached end of packet.");
+      return;
+    }
+
+    if (ps2ip_packet.type == 'K') {
+#ifdef _DBG_ESP32_PS2_EMU_
+      Serial.println("Recieved keyboard packet.");
+#endif
+      xQueueSend(xQueue_keyboard_code, &ps2ip_packet, 0);
+    } else if (ps2ip_packet.type == 'M') {
+#ifdef _DBG_ESP32_PS2_EMU_
+      Serial.println("Recieved mouse packet.");
+#endif
+      xQueueSend(xQueue_mouse_code, &ps2ip_packet, 0);
+    }
+  });
 
   xQueue_mouse_code = xQueueCreate(MOUSE_QUEUE_LEN, sizeof(Ps2ipPacket));
   xQueue_keyboard_code = xQueueCreate(KEYBOARD_QUEUE_LEN, sizeof(Ps2ipPacket));
@@ -226,65 +277,5 @@ void keyboard_loop(void *args) {
 }
 
 void loop() {
-  Ps2ipPacket ps2ip_packet;
-
-  // note: recieved packets are sometimes combined into one packet.
-  int size = Udp.parsePacket();
-  if (size) {
-#ifdef _DBG_ESP32_PS2_EMU_
-    Serial.println();
-    Serial.print("size:");
-    Serial.println(size);
-#endif
-
-    do {
-      // read type field
-      int ret = Udp.read();
-      if (ret == -1) {
-        Serial.println("Udp.read() failed because no buffer is available");
-        break;
-      }
-      ps2ip_packet.type = ret;
-      if (ps2ip_packet.type != 'M' && ps2ip_packet.type != 'K') {
-        Serial.println("Invalid type field");
-        continue;
-      }
-
-      // read length field
-      ret = Udp.read();
-      if (ret == -1) {
-        Serial.println("Udp.read() failed because no buffer is available");
-        break;
-      }
-      ps2ip_packet.len = ret;
-      if (ps2ip_packet.len > sizeof(ps2ip_packet.data)) {
-        Serial.println("Invalid length field");
-        continue;
-      }
-
-#ifdef _DBG_ESP32_PS2_EMU_
-      Serial.printf("type: %c\n", type);
-      Serial.printf("length: %u\n", length);
-#endif
-
-      ret = Udp.read(ps2ip_packet.data, ps2ip_packet.len);
-      if (ret < ps2ip_packet.len) {
-        Serial.println("Udp.read() reached end of buffer before reading all data");
-        break;
-      }
-
-      if (ps2ip_packet.type == 'K') {
-#ifdef _DBG_ESP32_PS2_EMU_
-        Serial.println("Recieved keyboard packet.");
-#endif
-        xQueueSend(xQueue_keyboard_code, &ps2ip_packet, 0);
-      } else if (ps2ip_packet.type == 'M') {
-#ifdef _DBG_ESP32_PS2_EMU_
-        Serial.println("Recieved mouse packet.");
-#endif
-        xQueueSend(xQueue_mouse_code, &ps2ip_packet, 0);
-      }
-    } while (Udp.available() > 0);
-  }
   delay(MAIN_LOOP_DELAY);
 }

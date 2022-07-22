@@ -49,8 +49,6 @@ QueueHandle_t xQueue_mouse_code;
 QueueHandle_t xQueue_keyboard_code;
 const size_t MOUSE_QUEUE_LEN = 30;
 const size_t KEYBOARD_QUEUE_LEN = 30;
-// const size_t MOUSE_QUEUE_ITEM_SIZE = 5;
-// const size_t KEYBOARD_QUEUE_ITEM_SIZE = 9;
 const BaseType_t CORE_ID_MOUSE_LOOP = 1;
 const BaseType_t CORE_ID_KEYBOARD_LOOP = 0;
 const BaseType_t CORE_ID_MOUSE_WRITE = 1;
@@ -62,6 +60,8 @@ const UBaseType_t PRIORITY_KEYBOARD_WRITE = 4;
 const uint32_t MOUSE_LOOP_DELAY = 7;
 const uint32_t KEYBOARD_LOOP_DELAY = 7;
 const uint32_t MAIN_LOOP_DELAY = 1000;
+// Some hosts do not send enable data reporting command.
+// Enable these flags to allow ESP32 to send data report unconditionally.
 const boolean FORCE_DATA_REPORTING_KEYBOARD = true;
 const boolean FORCE_DATA_REPORTING_MOUSE = false;
 
@@ -184,9 +184,6 @@ void mouse_write(void *args) {
       Serial.println("Warning: mouse_write: Data report interrupted");
     }
   }
-  // else {
-  //   Serial.println("Error: mouse_write: Legnth of data report is invalid");
-  // }
 
   delete args_p;
   vTaskDelete(NULL);
@@ -205,15 +202,11 @@ void mouse_loop(void *args) {  //スレッド ②
 
     digitalWrite(LED_BUILTIN, mouse.data_report_enabled);
 
-    // uint8_t msg[MOUSE_QUEUE_ITEM_SIZE];
     Ps2ipPacket pkt;
     if (xQueueReceive(xQueue_mouse_code, &pkt, 0) == pdTRUE) {
       mouse_write_args_t *args_p = new mouse_write_args_t;
       args_p->mouse = &mouse;
       args_p->packet = pkt;
-      // for (int i = 0; i < args_p->len; i++) {
-      //   args_p->data[i] = msg[i + 1];
-      // }
       TaskHandle_t thp;
       xTaskCreateUniversal(mouse_write, "mouse_write", 4096, args_p, PRIORITY_MOUSE_WRITE, &thp, CORE_ID_MOUSE_WRITE);
     }
@@ -266,9 +259,6 @@ void keyboard_loop(void *args) {
       keyboard_write_args_t *args_p = new keyboard_write_args_t;
       args_p->keyboard = &keyboard;
       args_p->packet = pkt;
-      // for (int i = 0; i < args_p->len; i++) {
-      //   args_p->data[i] = msg[i + 1];
-      // }
       TaskHandle_t thp;
       xTaskCreateUniversal(keyboard_write, "keyboard_write", 4096, args_p, PRIORITY_KEYBOARD_WRITE, &thp, CORE_ID_KEYBOARD_WRITE);
     }

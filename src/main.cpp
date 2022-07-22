@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
-#include <ps2dev.h>  // Emulate a PS/2 device
+#include <esp32-ps2dev.h>  // Emulate a PS/2 device
 
 #include "ps2_keyboard.cpp"  // Contains the PS/2 keyboard code
 #include "ps2_mouse.cpp"     // Contains the PS/2 mouse code

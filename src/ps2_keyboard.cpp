@@ -1,4 +1,6 @@
-#include <ps2dev.h>
+#include <esp32-ps2dev.h>
+
+using namespace esp32_ps2dev;
 
 class PS2keyboard : public PS2dev {
  public:
@@ -101,8 +103,8 @@ class PS2keyboard : public PS2dev {
   }
   int keyboard_handle(unsigned char *leds) {
     unsigned char c;  // char stores data recieved from computer for KBD
-    if (available()) {
-      if (!read(&c)) return keyboard_reply(c, leds);
+    if (get_bus_state() == BusState::HOST_REQUEST_TO_SEND) {
+      if (!read(&c, 0)) return keyboard_reply(c, leds);
     }
     return 0;
   }

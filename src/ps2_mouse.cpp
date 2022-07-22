@@ -1,5 +1,7 @@
 #include <Arduino.h>
-#include <ps2dev.h>
+#include <esp32-ps2dev.h>
+
+using namespace esp32_ps2dev;
 
 class PS2mouse : public PS2dev {
  public:
@@ -319,8 +321,8 @@ class PS2mouse : public PS2dev {
   // }
   int mouse_handle() {
     uint8_t c;  // char stores data recieved from computer for KBD
-    if (available()) {
-      if (!read(&c)) return mouse_reply(c);
+    if (get_bus_state() == BusState::HOST_REQUEST_TO_SEND) {
+      if (!read(&c, 0)) return mouse_reply(c);
       // if (_count_or_button_changed_since_last_report && _mode == STREAM_MODE
       // &&
       //     data_report_enabled) {

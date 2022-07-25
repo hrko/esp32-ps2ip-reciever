@@ -176,10 +176,17 @@ void setup() {
 
 void mouse_write(void *args) {
   uint64_t last_time = 0;
+  Ps2ipPacket failed_packet = {0};
 
   while (true) {
     Ps2ipPacket pkt;
-    xQueueReceive(xQueue_mouse_code, &pkt, portMAX_DELAY);
+
+    if (failed_packet.type != 0) {
+      pkt = failed_packet;
+      failed_packet.type = 0;
+    } else {
+      xQueueReceive(xQueue_mouse_code, &pkt, portMAX_DELAY);
+    }
 
     int64_t time_passed_us = micros() - last_time;
     int64_t min_report_interval_us = 1000000 / mouse.sample_rate;
@@ -194,8 +201,12 @@ void mouse_write(void *args) {
 
     if (pkt.is_valid_mouse_packet() && (mouse.data_report_enabled || FORCE_DATA_REPORTING_MOUSE)) {
       for (size_t i = 0; i < pkt.len; i++) {
-        if (mouse.write(pkt.data[i]) != 0) {
-          Serial.println("Warning: mouse_write: Data report interrupted");
+        int ret = mouse.write(pkt.data[i]);
+        if (ret != 0) {
+          Serial.println("Warning: mouse_write: Data report interrupted. Retrying.");
+          Serial.println("Index: " + String(i));
+          Serial.println("ret: " + String(ret));
+          failed_packet = pkt;
           break;
         }
       }

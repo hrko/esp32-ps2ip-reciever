@@ -8,20 +8,6 @@
 
 class Ps2ipPacket {
  public:
-  // /**
-  //  * @brief Construct a new Ps2ipPacket object.
-  //  *
-  //  * @param type packet type. 'M' for mouse, 'K' for keyboard.
-  //  * @param len length of data. 1-16.
-  //  * @param data data[0] to data[len - 1] will be copied to this object.
-  //  */
-  // Ps2ipPacket(char type, uint8_t len, uint8_t *data) {
-  //   this->type = type;
-  //   this->len = len;
-  //   for (int i = 0; i < len; i++) {
-  //     this->data[i] = data[i];
-  //   }
-  // }
   char type;
   uint8_t len;
   uint8_t data[16];

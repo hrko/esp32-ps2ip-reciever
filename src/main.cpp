@@ -4,9 +4,7 @@
 #include <esp32-ps2dev.h>  // Emulate a PS/2 device
 #include <esp_wifi.h>
 
-#include "ps2_keyboard.cpp"  // Contains the PS/2 keyboard code
-#include "ps2_mouse.cpp"     // Contains the PS/2 mouse code
-#include "secrets.h"         // Contains the WiFi credentials
+#include "secrets.h"  // Contains the WiFi credentials
 
 class Ps2ipPacket {
  public:
@@ -44,21 +42,6 @@ class Ps2ipPacket {
 
 const uint8_t LED_BUILTIN = 2;
 
-TaskHandle_t thp[4];
-QueueHandle_t xQueue_mouse_code;
-QueueHandle_t xQueue_keyboard_code;
-const size_t MOUSE_QUEUE_LEN = 30;
-const size_t KEYBOARD_QUEUE_LEN = 30;
-const BaseType_t CORE_ID_MOUSE_LOOP = 1;
-const BaseType_t CORE_ID_KEYBOARD_LOOP = 0;
-const BaseType_t CORE_ID_MOUSE_WRITE = 1;
-const BaseType_t CORE_ID_KEYBOARD_WRITE = 0;
-const UBaseType_t PRIORITY_MOUSE_LOOP = 3;
-const UBaseType_t PRIORITY_KEYBOARD_LOOP = 2;
-const UBaseType_t PRIORITY_MOUSE_WRITE = 5;
-const UBaseType_t PRIORITY_KEYBOARD_WRITE = 4;
-const uint32_t MOUSE_LOOP_DELAY = 9;
-const uint32_t KEYBOARD_LOOP_DELAY = 9;
 const uint32_t MAIN_LOOP_DELAY = 1000;
 // Some hosts do not send enable data reporting command.
 // Enable these flags to allow ESP32 to send data report unconditionally.
@@ -70,10 +53,6 @@ const IPAddress GATEWAY(172, 21, 186, 2);
 const IPAddress SUBNET_MASK(255, 255, 255, 0);
 const IPAddress DNS(172, 21, 186, 1);
 
-portMUX_TYPE bus_mutex = portMUX_INITIALIZER_UNLOCKED;
-PS2mouse mouse(17, 16);        // clock, data
-PS2keyboard keyboard(19, 18);  // clock, data
-
 AsyncUDP Udp;
 const uint16_t UDP_PORT = 3252;
 
@@ -81,6 +60,9 @@ void mouse_handle_host_msg(void *args);
 void keyboard_handle_host_msg(void *args);
 void mouse_write(void *args);
 void keyboard_write(void *args);
+
+esp32_ps2dev::PS2Mouse mouse(17, 16);
+esp32_ps2dev::PS2Keyboard keyboard(19, 18);
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -108,7 +90,7 @@ void setup() {
 
   Udp.listen(UDP_PORT);
   Serial.println("Started UDP server on port " + String(UDP_PORT));
-  Udp.onPacket([](AsyncUDPPacket packet) {
+  Udp.onPacket([&](AsyncUDPPacket packet) {
     Ps2ipPacket ps2ip_packet;
 
     // read type field
@@ -135,9 +117,9 @@ void setup() {
       return;
     }
 
-#ifdef _DBG_ESP32_PS2_EMU_
-    Serial.printf("type: %c\n", type);
-    Serial.printf("length: %u\n", length);
+#ifdef _ESP32_PS2IP_DEBUG_
+    Serial.printf("ps2ip_packet.type: %c\n", ps2ip_packet.type);
+    Serial.printf("ps2ip_packet.len: %d\n", ps2ip_packet.len);
 #endif
 
     ret = packet.read(ps2ip_packet.data, ps2ip_packet.len);
@@ -146,135 +128,28 @@ void setup() {
       return;
     }
 
+    esp32_ps2dev::PS2Packet ps2_packet;
     if (ps2ip_packet.type == 'K') {
-#ifdef _DBG_ESP32_PS2_EMU_
+#ifdef _ESP32_PS2IP_DEBUG_
       Serial.println("Recieved keyboard packet.");
 #endif
-      xQueueSend(xQueue_keyboard_code, &ps2ip_packet, 0);
+      if (!keyboard.data_reporting_enabled() && !FORCE_DATA_REPORTING_KEYBOARD) return;
+      ps2_packet.len = ps2ip_packet.len;
+      memcpy(ps2_packet.data, ps2ip_packet.data, ps2_packet.len);
+      keyboard.send_packet(&ps2_packet);
     } else if (ps2ip_packet.type == 'M') {
-#ifdef _DBG_ESP32_PS2_EMU_
+#ifdef _ESP32_PS2IP_DEBUG_
       Serial.println("Recieved mouse packet.");
 #endif
-      xQueueSend(xQueue_mouse_code, &ps2ip_packet, 0);
+      if (!mouse.data_reporting_enabled() && !FORCE_DATA_REPORTING_MOUSE) return;
+      ps2_packet.len = 3 + mouse.has_wheel(); // truncate to 3 bytes if ESP32 is working as a mouse without a wheel
+      memcpy(ps2_packet.data, ps2ip_packet.data, ps2_packet.len);
+      if (mouse.has_4th_and_5th_buttons()) ps2_packet.data[3] &= 0x0F;
+      mouse.send_packet(&ps2_packet);
     }
   });
 
-  xQueue_mouse_code = xQueueCreate(MOUSE_QUEUE_LEN, sizeof(Ps2ipPacket));
-  xQueue_keyboard_code = xQueueCreate(KEYBOARD_QUEUE_LEN, sizeof(Ps2ipPacket));
-
-  // function, task_name, stack_size, NULL, task_handle, priority, core_id
-  xTaskCreateUniversal(mouse_handle_host_msg, "mouse_handle_host_msg", 4096, NULL, PRIORITY_MOUSE_LOOP, &thp[0], CORE_ID_MOUSE_LOOP);
-  Serial.println("Created [mouse_handle_host_msg] task");
-  xTaskCreateUniversal(keyboard_handle_host_msg, "keyboard_handle_host_msg", 4096, NULL, PRIORITY_KEYBOARD_LOOP, &thp[1],
-                       CORE_ID_KEYBOARD_LOOP);
-  Serial.println("Created [keyboard_handle_host_msg] task");
-  xTaskCreateUniversal(mouse_write, "mouse_write", 4096, NULL, PRIORITY_MOUSE_WRITE, &thp[2], CORE_ID_MOUSE_WRITE);
-  Serial.println("Created [mouse_write] task");
-
   Serial.println("Setup complete.");
-}
-
-void mouse_write(void *args) {
-  uint64_t last_time = 0;
-  Ps2ipPacket failed_packet = {0};
-
-  while (true) {
-    Ps2ipPacket pkt;
-
-    if (failed_packet.type != 0) {
-      pkt = failed_packet;
-      failed_packet.type = 0;
-    } else {
-      xQueueReceive(xQueue_mouse_code, &pkt, portMAX_DELAY);
-    }
-
-    int64_t time_passed_us = micros() - last_time;
-    int64_t min_report_interval_us = 1000000 / mouse.sample_rate;
-    if (time_passed_us < min_report_interval_us) {
-      delayMicroseconds(min_report_interval_us - time_passed_us);
-    }
-    last_time = micros();
-
-    portENTER_CRITICAL(&bus_mutex);
-
-    pkt.len = 3 + mouse.has_wheel;
-
-    if (pkt.is_valid_mouse_packet() && (mouse.data_report_enabled || FORCE_DATA_REPORTING_MOUSE)) {
-      for (size_t i = 0; i < pkt.len; i++) {
-        int ret = mouse.write(pkt.data[i]);
-        if (ret != 0) {
-          Serial.println("Warning: mouse_write: Data report interrupted. Retrying.");
-          Serial.println("Index: " + String(i));
-          Serial.println("ret: " + String(ret));
-          failed_packet = pkt;
-          break;
-        }
-      }
-    }
-
-    portEXIT_CRITICAL(&bus_mutex);
-
-    delay(1);
-  }
-}
-
-void mouse_handle_host_msg(void *args) {  //スレッド ②
-  // mouse_init
-  while (mouse.write(0xAA) != 0) delay(1);
-  while (mouse.write(0x00) != 0) delay(1);
-  Serial.println("Mouse initialized");
-
-  while (1) {
-    portENTER_CRITICAL(&bus_mutex);
-    mouse.mouse_handle();
-    portEXIT_CRITICAL(&bus_mutex);
-
-    digitalWrite(LED_BUILTIN, mouse.data_report_enabled);
-
-    delay(MOUSE_LOOP_DELAY);
-  }
-}
-
-void keyboard_write(void *args) {
-  portENTER_CRITICAL(&bus_mutex);
-
-  Ps2ipPacket pkt;
-  if (xQueuePeek(xQueue_keyboard_code, &pkt, 0) != pdTRUE) {
-    goto FINALLY;
-  }
-
-  if (keyboard.data_report_enabled || FORCE_DATA_REPORTING_KEYBOARD) {
-    int ret = keyboard.write_multi(pkt.len, pkt.data);
-    if (ret != 0) {
-      Serial.println("Warning: keyboard_write: Data report interrupted");
-    } else {
-      xQueueReceive(xQueue_keyboard_code, &pkt, 0);
-    }
-  }
-
-FINALLY:
-  portEXIT_CRITICAL(&bus_mutex);
-  vTaskDelete(NULL);
-}
-
-void keyboard_handle_host_msg(void *args) {
-  while (keyboard.write(0xAA) != 0) delay(1);
-  Serial.println("Keyboard initialized");
-
-  while (1) {
-    uint8_t leds;
-    if (keyboard.keyboard_handle(&leds)) {
-      Serial.print("LEDS");
-      Serial.println(leds, HEX);
-      digitalWrite(LED_BUILTIN, leds);
-    }
-
-    Ps2ipPacket pkt;
-    if (xQueuePeek(xQueue_keyboard_code, &pkt, pdMS_TO_TICKS(KEYBOARD_LOOP_DELAY)) == pdTRUE) {
-      TaskHandle_t thp;
-      xTaskCreateUniversal(keyboard_write, "keyboard_write", 4096, NULL, PRIORITY_KEYBOARD_WRITE, &thp, CORE_ID_KEYBOARD_WRITE);
-    }
-  }
 }
 
 void loop() { delay(MAIN_LOOP_DELAY); }

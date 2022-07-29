@@ -52,6 +52,7 @@ esp32_ps2dev::PS2Keyboard keyboard(19, 18);
 
 void setup() {
   mouse.begin();
+  keyboard.begin();
   
   pinMode(LED_BUILTIN, OUTPUT);
   Serial.begin(115200);

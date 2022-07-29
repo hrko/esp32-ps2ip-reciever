@@ -53,7 +53,7 @@ esp32_ps2dev::PS2Keyboard keyboard(19, 18);
 void setup() {
   mouse.begin();
   keyboard.begin();
-  
+
   pinMode(LED_BUILTIN, OUTPUT);
   Serial.begin(115200);
 
@@ -131,7 +131,7 @@ void setup() {
       Serial.println("Recieved mouse packet.");
 #endif
       if (!mouse.data_reporting_enabled() && !FORCE_DATA_REPORTING_MOUSE) return;
-      ps2_packet.len = 3 + mouse.has_wheel(); // truncate to 3 bytes if ESP32 is working as a mouse without a wheel
+      ps2_packet.len = 3 + mouse.has_wheel();  // truncate to 3 bytes if ESP32 is working as a mouse without a wheel
       memcpy(ps2_packet.data, ps2ip_packet.data, ps2_packet.len);
       if (mouse.has_4th_and_5th_buttons()) ps2_packet.data[3] &= 0x0F;
       mouse.send_packet(&ps2_packet);
